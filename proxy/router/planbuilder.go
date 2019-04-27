@@ -66,7 +66,7 @@ func (plan *Plan) getTableIndexs(expr sqlparser.BoolExpr) ([]int, error) {
 	switch plan.Rule.Type {
 	case HashRuleType:
 		return plan.getHashShardTableIndex(expr)
-	case RangeRuleType:
+	case RangeRuleType, HundredDbTenTable:
 		return plan.getRangeShardTableIndex(expr)
 	case DateYearRuleType, DateMonthRuleType, DateDayRuleType:
 		return plan.getDateShardTableIndex(expr)

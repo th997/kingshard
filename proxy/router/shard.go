@@ -131,6 +131,14 @@ type HashShard struct {
 	ShardNum int
 }
 
+/**/
+type HundredDbTenTableShard struct {
+}
+
+func (s *HundredDbTenTableShard) FindForKey(key interface{}) (int, error) {
+    return int(NumValue(key) % 1000), nil
+}
+
 func (s *HashShard) FindForKey(key interface{}) (int, error) {
 	h := HashValue(key)
 

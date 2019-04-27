@@ -31,6 +31,7 @@ var (
 	DateYearRuleType  = "date_year"
 	DateMonthRuleType = "date_month"
 	DateDayRuleType   = "date_day"
+	HundredDbTenTable = "hundred_db_ten_table"
 	MinMonthDaysCount = 28
 	MaxMonthDaysCount = 31
 	MonthsCount       = 12
@@ -171,7 +172,7 @@ func parseRule(cfg *config.ShardConfig) (*Rule, error) {
 	r.TableToNode = make(map[int]int, 0)
 
 	switch r.Type {
-	case HashRuleType, RangeRuleType:
+	case HashRuleType, RangeRuleType, HundredDbTenTable:
 		var sumTables int
 		if len(cfg.Locations) != len(r.Nodes) {
 			return nil, errors.ErrLocationsCount
@@ -261,6 +262,8 @@ func parseShard(r *Rule, cfg *config.ShardConfig) error {
 		}
 
 		r.Shard = &NumRangeShard{Shards: rs}
+	case HundredDbTenTable:
+		r.Shard = &HundredDbTenTableShard{}
 	case DateDayRuleType:
 		r.Shard = &DateDayShard{}
 	case DateMonthRuleType:
@@ -308,7 +311,7 @@ func (r *Router) buildSelectPlan(db string, statement sqlparser.Statement) (*Pla
 	var where *sqlparser.Where
 	var err error
 	var tableName string
-
+	fmt.Printf("buildSelectPlan %v", statement)
 	stmt := statement.(*sqlparser.Select)
 	switch v := (stmt.From[0]).(type) {
 	case *sqlparser.AliasedTableExpr:
@@ -529,14 +532,21 @@ func (r *Router) buildReplacePlan(db string, statement sqlparser.Statement) (*Pl
 	return plan, nil
 }
 
+func replaceDb(sql string, tableIndex int) string {
+	return strings.Replace(sql, "_db.", fmt.Sprintf("_%02d_db.", tableIndex/10), -1)
+}
+
 //rewrite select sql
 func (r *Router) rewriteSelectSql(plan *Plan, node *sqlparser.Select, tableIndex int) string {
+	//var dbSuffix = ""
+	var tableSuffix = "_%01d"
+	var tableIndexSuffix = tableIndex % 10
 	buf := sqlparser.NewTrackedBuffer(nil)
 	buf.Fprintf("select %v%s",
 		node.Comments,
 		node.Distinct,
 	)
-
+	fmt.Printf("rewriteSelectSql:%v", buf.String())
 	var prefix string
 	//rewrite select expr
 	for _, expr := range node.SelectExprs {
@@ -544,10 +554,10 @@ func (r *Router) rewriteSelectSql(plan *Plan, node *sqlparser.Select, tableIndex
 		case *sqlparser.StarExpr:
 			//for shardTable.*,need replace table into shardTable_xxxx.
 			if string(v.TableName) == plan.Rule.Table {
-				fmt.Fprintf(buf, "%s%s_%04d.*",
+				fmt.Fprintf(buf, "%s%s"+tableSuffix+".*",
 					prefix,
-					plan.Rule.Table,
-					tableIndex,
+					replaceDb(plan.Rule.Table, tableIndex),
+					tableIndexSuffix,
 				)
 			} else {
 				buf.Fprintf("%s%v", prefix, expr)
@@ -557,10 +567,10 @@ func (r *Router) rewriteSelectSql(plan *Plan, node *sqlparser.Select, tableIndex
 			//into shardTable_xxxx.column as a
 			if colName, ok := v.Expr.(*sqlparser.ColName); ok {
 				if string(colName.Qualifier) == plan.Rule.Table {
-					fmt.Fprintf(buf, "%s%s_%04d.%s",
+					fmt.Fprintf(buf, "%s%s"+tableSuffix+".%s",
 						prefix,
-						plan.Rule.Table,
-						tableIndex,
+						replaceDb(plan.Rule.Table, tableIndex),
+						tableIndexSuffix,
 						string(colName.Name),
 					)
 				} else {
@@ -578,6 +588,7 @@ func (r *Router) rewriteSelectSql(plan *Plan, node *sqlparser.Select, tableIndex
 		}
 		prefix = ", "
 	}
+	fmt.Printf("rewriteSelectSql:%v", buf.String())
 	//insert the group columns in the first of select cloumns
 	if len(node.GroupBy) != 0 {
 		prefix = ","
@@ -589,35 +600,35 @@ func (r *Router) rewriteSelectSql(plan *Plan, node *sqlparser.Select, tableIndex
 	switch v := (node.From[0]).(type) {
 	case *sqlparser.AliasedTableExpr:
 		if len(v.As) != 0 {
-			fmt.Fprintf(buf, "%s_%04d as %s",
-				sqlparser.String(v.Expr),
-				tableIndex,
+			fmt.Fprintf(buf, "%s"+tableSuffix+" as %s",
+				replaceDb(sqlparser.String(v.Expr), tableIndex),
+				tableIndexSuffix,
 				string(v.As),
 			)
 		} else {
-			fmt.Fprintf(buf, "%s_%04d",
-				sqlparser.String(v.Expr),
-				tableIndex,
+			fmt.Fprintf(buf, "%s"+tableSuffix,
+				replaceDb(sqlparser.String(v.Expr), tableIndex),
+				tableIndexSuffix,
 			)
 		}
 	case *sqlparser.JoinTableExpr:
 		if ate, ok := (v.LeftExpr).(*sqlparser.AliasedTableExpr); ok {
 			if len(ate.As) != 0 {
-				fmt.Fprintf(buf, "%s_%04d as %s",
-					sqlparser.String(ate.Expr),
-					tableIndex,
+				fmt.Fprintf(buf, "%s"+tableSuffix+" as %s",
+					replaceDb(sqlparser.String(ate.Expr), tableIndex),
+					tableIndexSuffix,
 					string(ate.As),
 				)
 			} else {
-				fmt.Fprintf(buf, "%s_%04d",
-					sqlparser.String(ate.Expr),
-					tableIndex,
+				fmt.Fprintf(buf, "%s"+tableSuffix,
+					replaceDb(sqlparser.String(ate.Expr), tableIndex),
+					tableIndexSuffix,
 				)
 			}
 		} else {
-			fmt.Fprintf(buf, "%s_%04d",
-				sqlparser.String(v.LeftExpr),
-				tableIndex,
+			fmt.Fprintf(buf, "%s"+tableSuffix,
+				replaceDb(sqlparser.String(v.LeftExpr), tableIndex),
+				tableIndexSuffix,
 			)
 		}
 		buf.Fprintf(" %s %v", v.Join, v.RightExpr)
@@ -625,11 +636,12 @@ func (r *Router) rewriteSelectSql(plan *Plan, node *sqlparser.Select, tableIndex
 			buf.Fprintf(" on %v", v.On)
 		}
 	default:
-		fmt.Fprintf(buf, "%s_%04d",
-			sqlparser.String(node.From[0]),
-			tableIndex,
+		fmt.Fprintf(buf, "%s"+tableSuffix,
+			replaceDb(sqlparser.String(node.From[0]), tableIndex),
+			tableIndexSuffix,
 		)
 	}
+	fmt.Printf("rewriteSelectSql:%v", buf.String())
 	//append other tables
 	prefix = ", "
 	for i := 1; i < len(node.From); i++ {
@@ -643,7 +655,7 @@ func (r *Router) rewriteSelectSql(plan *Plan, node *sqlparser.Select, tableIndex
 	}
 	//rewrite where
 	oldright, err := plan.rewriteWhereIn(tableIndex)
-
+	fmt.Printf("rewriteSelectSql:%v", buf.String())
 	buf.Fprintf("%v%v%v%v%v%s",
 		node.Where,
 		node.GroupBy,
@@ -656,6 +668,7 @@ func (r *Router) rewriteSelectSql(plan *Plan, node *sqlparser.Select, tableIndex
 	if oldright != nil {
 		plan.InRightToReplace.Right = oldright
 	}
+	fmt.Printf("rewriteSelectSql:%v", buf.String())
 	return buf.String()
 }
 

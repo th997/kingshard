@@ -31,7 +31,7 @@ import (
 	"github.com/flike/kingshard/web"
 )
 
-var configFile *string = flag.String("config", "/etc/ks.yaml", "kingshard config file")
+var configFile *string = flag.String("config", "/Volumes/d/zm/note/kingshard/ks1.yaml", "kingshard config file")
 var logLevel *string = flag.String("log-level", "", "log level [debug|info|warn|error], default error")
 var version *bool = flag.Bool("v", false, "the version of kingshard")
 
